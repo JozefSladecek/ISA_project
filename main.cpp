@@ -9,9 +9,13 @@
 #include <unistd.h>
 #include <cstring>
 #include <netdb.h>
+#include <bitset>
 
 #include <iomanip>
 
+//todo check about static classes and helper functions
+
+//https://learn.microsoft.com/sk-sk/windows/win32/seccertenroll/about-object-identifier?redirectedfrom=MSDN
 
 // test packet
 std::vector<uint8_t> testpacket = {
@@ -29,6 +33,7 @@ std::vector<uint8_t> testpacket = {
 };
 
 #define SNMP_port 161
+constexpr int OID_FIRST_BYTE_FACTOR = 40;
 //// args parser
 
 struct Config {
@@ -69,51 +74,6 @@ Config parseArgs(int argc, char* argv[]) {
 
 //// args parser
 
-int fileLoad(const std::string& filename, std::vector<std::string>& oids) {
-    std::ifstream infile(filename);
-
-    if (!infile.is_open()) {
-        std::cerr << "Error while opening file " << filename << "\n";
-        return 1;
-    }
-
-    std::string line;
-    while (std::getline(infile, line)) {
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-        oids.push_back(line); // save oids to vector
-    }
-    return 0;
-}
-
-// int connect(std::string &target) {
-//     struct addrinfo hints{};
-//     struct addrinfo *result;
-//
-//     hints.ai_family = AF_INET;
-//     hints.ai_socktype = SOCK_DGRAM; // flags for getaddrinfo
-//
-//     int sock = socket(AF_INET, SOCK_DGRAM, 0); // udp ipv4
-//
-//     if (sock < 0) {
-//         std::cerr << "Error while opening socket\n";
-//         return 1;
-//     }
-//     // sockaddr_in server_adress{};
-//     // server_adress.sin_family = AF_INET;
-//     // server_adress.sin_port = htons(161); // snmp port
-//     int status = getaddrinfo(target.c_str(), nullptr, &hints, &result);
-//     if (status != 0) {
-//         std::cerr << "getaddrinfo error: " << gai_strerror(status) << "\n";
-//         exit(1);
-//     }
-//     std::cout << result;
-//
-//     struct sockaddr_in ipv4 = *(struct sockaddr_in *)result->ai_addr;
-//     freeaddrinfo(result);
-//     //inet_pton(AF_INET, "127.0.0.1", &server_adress.sin_addr);
-// }
 
 // if adress in dns format return ip else return ip
 std::string resolveIP(const std::string &target) {
@@ -137,6 +97,100 @@ std::string resolveIP(const std::string &target) {
     freeaddrinfo(result);
     return ipStr;
 }
+
+
+// uint8_t first_byte;
+// uint8_t first_number;
+// uint8_t second_number;
+//
+// for (int i =0; i < all_oids_encoded.size(); ++i) {
+//     first_number = all_oids_encoded[i][0];
+//     second_number = all_oids_encoded[i][1];
+//     uint8_t first_byte = OID_FIRST_BYTE_FACTOR * first_number + second_number;
+// }
+class SNMP_PacketBuilder {
+public:
+    static std::vector<std::string> fileLoad(const std::string& filename);
+    static std::vector<std::vector<uint32_t>> parse_oids_to_ints(const std::vector<std::string>& oids);
+    static std::vector<uint32_t> encode_oids_to_ber(const std::vector<uint32_t>& oid_array);
+};
+
+
+std::vector<std::string> SNMP_PacketBuilder::fileLoad(const std::string& filename) {
+    std::vector<std::string> oids;
+    std::ifstream infile(filename);
+
+    if (!infile.is_open()) {
+        std::cerr << "Error: Cannot open file " << filename << "\n";
+        return oids;
+    }
+
+    std::string line;
+    while (std::getline(infile, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        oids.push_back(line);
+    }
+
+    return oids;
+}
+
+std::vector<std::vector<uint32_t>> SNMP_PacketBuilder::parse_oids_to_ints(const std::vector<std::string>& oids) {
+    std::stringstream ss;
+    std::string item;
+    std::vector<std::vector<uint32_t>> all_oids_encoded;
+
+    // convertion of array of string arrays to array of int arrays without '.'
+    for (const auto& oid : oids) {
+        std::stringstream ss(oid);
+        std::vector<uint32_t> result; // new result for each oid
+        while (std::getline(ss,item,'.')) {
+            int num = std::stoi(item);
+            result.push_back(static_cast<uint32_t>(num));    // string -> uint
+            //std::cout << item << "\n";
+        }
+        all_oids_encoded.push_back(result); // array of arrays
+
+    }
+
+    return all_oids_encoded;
+}
+
+std::vector<uint32_t> SNMP_PacketBuilder::encode_oids_to_ber(const std::vector<uint32_t>& oid_array) {
+    uint32_t first_byte;
+    uint32_t first_number;
+    uint32_t second_number;
+    std::vector<uint32_t> oid_in_ber;
+
+    first_number = oid_array[0];
+    second_number = oid_array[1];
+    first_byte = first_number * OID_FIRST_BYTE_FACTOR + second_number;
+    oid_in_ber.push_back(first_byte);
+
+    for (int i = 2; i < oid_array.size(); i++) {
+        uint32_t value = oid_array[i];
+        if (value <= 127) {
+            oid_in_ber.push_back(static_cast<uint32_t>(value));
+        }
+        else {
+            std::vector<uint32_t> bytes;
+            do {
+                uint32_t byte = value & 0x7F; // 7 last bytes because MSB = 0
+                bytes.insert(bytes.begin(), byte);
+                value >>= 7; // move to save upper 7 bytes
+            } while (value > 0);
+
+            for (size_t j = 0; j < bytes.size() - 1; ++j) {
+                bytes[j] |= 0x80; // for upper 7 bytes MSB = 1
+            }
+
+            oid_in_ber.insert(oid_in_ber.end(), bytes.begin(), bytes.end());
+
+        }
+    }
+
+    return oid_in_ber;
+}
+
 
 class SNMP_client {
     public:
@@ -223,81 +277,44 @@ class SNMP_client {
 
 };
 
-// int SNMP_send(const std::string& ip, int& socket_fd) {
-//     socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
-//
-//     struct sockaddr_in server_addr{};
-//     server_addr.sin_family = AF_INET;
-//     server_addr.sin_port = htons(161);
-//
-//     if (inet_pton(AF_INET, ip.c_str(), &server_addr.sin_addr) <= 0) {
-//         std::cerr << "Invalid IP address\n";
-//         close(socket_fd);
-//         socket_fd = -1;
-//         return 1;
-//     }
-//
-//     int sent = sendto(socket_fd, testpacket.data(), testpacket.size(), 0,
-//                      (struct sockaddr*)&server_addr, sizeof(server_addr));
-//
-//     if (sent < 0) {
-//         std::cerr << "Error while sending\n";
-//         close(socket_fd);
-//         socket_fd = -1;
-//         return 1;
-//     }
-//
-//     std::cout << "Packet sent (" << sent << " bytes)\n";
-//     return 0;
-// }
-//
-// int SNMP_receive(int socket_fd, const std::string& ip) {
-//     if (socket_fd < 0) {
-//         std::cerr << "Invalid socket descriptor\n";
-//         return 1;
-//     }
-//
-//     struct sockaddr_in server_addr{};
-//     server_addr.sin_family = AF_INET;
-//     server_addr.sin_port = htons(161);
-//     inet_pton(AF_INET, ip.c_str(), &server_addr.sin_addr);
-//
-//     uint8_t buffer[1024];
-//     socklen_t addr_len = sizeof(server_addr);
-//
-//     int received = recvfrom(socket_fd, buffer, sizeof(buffer), 0,
-//                            (struct sockaddr*)&server_addr, &addr_len);
-//
-//     if (received < 0) {
-//         std::cerr << "Error while receiving\n";
-//         close(socket_fd);
-//         return 1;
-//     }
-//
-//     std::cout << "Received response (" << received << " bytes):\n";
-//     for (int i = 0; i < received; ++i) {
-//         std::cout << std::hex << std::setw(2) << std::setfill('0')
-//                   << (int)buffer[i] << " ";
-//         if ((i+1) % 16 == 0) std::cout << "\n";
-//     }
-//     std::cout << "\n";
-//
-//     close(socket_fd);
-//     return 0;
-// }
-
 
 int main(int argc, char* argv[]) {
 
     Config config = parseArgs(argc, argv);
 
-    std::vector<std::string> oids;
 
-    if (fileLoad(config.oids_file,oids)) {
-        return 1;
+    std::vector<std::string> oids = SNMP_PacketBuilder::fileLoad("oids.txt");
+
+
+    std::vector<std::vector<uint32_t>> all_oids_int;
+
+
+    all_oids_int = SNMP_PacketBuilder::parse_oids_to_ints(oids);
+
+    std::vector<std::vector<uint32_t>> all_oids_encoded;
+
+    for (const auto& oid : all_oids_int) {
+        all_oids_encoded.push_back(SNMP_PacketBuilder::encode_oids_to_ber(oid));
     }
 
+    int oid_index = 1;
+    for (const auto& ber_oid : all_oids_encoded) {
+        std::cout << "OID " << oid_index++ << ": ";
+        for (auto b : ber_oid) {
+            std::cout << "0x"
+                      << std::hex << std::setw(2) << std::setfill('0')
+                      << static_cast<int>(b) << " ";
+        }
+        std::cout << std::dec << "\n";
+    }
+
+
+
+
+
     std::string ip = resolveIP(config.target);
+
+
 
     SNMP_client client(ip);
 
@@ -305,19 +322,8 @@ int main(int argc, char* argv[]) {
 
     client.SMNP_recieve();
 
+
     //std::cout << "Resolved IP: " << ip << "\n";
-
-    //int socket_fd;
-
-    // if (SNMP_send(ip, socket_fd) != 0) {
-    //     return 1; // Chyba pri odosielaní
-    // }
-    //
-    // //  answear
-    // if (SNMP_receive(socket_fd, ip) != 0) {
-    //     return 1; // Chyba pri prijímaní
-    // }
-
 
     // for (const auto& oid : oids) {
     //     std::cout << oid << "\n";
