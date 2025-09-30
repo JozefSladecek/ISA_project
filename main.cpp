@@ -398,6 +398,8 @@ int main(int argc, char* argv[]) {
     std::vector<uint8_t> getrequestPDU = SNMP_PacketBuilder::make_getrequest_PDU(varbinds_list);
 
 
+    std::vector<uint8_t> packet_to_send = SNMP_PacketBuilder::make_message(getrequestPDU);
+
     int index = 1;
     for (const auto& vb : varbinds) {
         std::cout << "Varbind " << index++ << ": ";
@@ -419,7 +421,8 @@ int main(int argc, char* argv[]) {
 
 
 
-    print_packet(getrequestPDU);
+    print_packet(packet_to_send);
+    //print_packet(testpacket);
 
     std::string ip = resolveIP(config.target);
 
@@ -427,7 +430,8 @@ int main(int argc, char* argv[]) {
 
     SNMP_client client(ip);
 
-    client.SNMP_send(testpacket);
+
+    client.SNMP_send(packet_to_send);
 
     client.SMNP_recieve();
 

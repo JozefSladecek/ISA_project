@@ -25,6 +25,7 @@ private:
     int port;
     struct sockaddr_in server_addr{};
     static std::string resolveIP(const std::string &target);
+    static void print_answer(uint8_t buffer[1024],int received);
 };
 
 

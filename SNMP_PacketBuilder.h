@@ -17,6 +17,7 @@ public:
     static std::vector<std::vector<uint8_t>> make_varbind(const std::vector<std::vector<uint8_t>>& encoded_oids_array);
     static std::vector<uint8_t> make_varbindlist(const std::vector<std::vector<uint8_t>>& oid_array);
     static std::vector<uint8_t> make_getrequest_PDU(std::vector<uint8_t> varbindlist);
+    static std::vector<uint8_t> make_message(std::vector<uint8_t> getrequest_PDU);
 };
 
 

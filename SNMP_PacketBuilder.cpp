@@ -17,6 +17,9 @@
 #define ERROR_STATUS 0x00
 #define ERROR_INDEX 0x00
 
+constexpr uint8_t SNMP_v2c_VERSION_ARRAY[3] = {0x02,0x01,0x01};
+constexpr uint8_t COMMUNITY_ARRAY[8] = {0x04,0x06,'p','u','b','l','i','c'}; // OCTET STRING,LENGHT OF 'PUBLIC', ..
+
 #include "SNMP_PacketBuilder.h"
 
 
@@ -92,7 +95,7 @@ std::vector<std::vector<uint8_t>> SNMP_PacketBuilder::make_varbind(const std::ve
         std::stringstream ss;
         ss << std::hex << std::uppercase << oid_lenght; // make hex value
         varbind.push_back(ASN1_SEQUENCE);
-        varbind.push_back(static_cast<uint8_t>(oid_lenght + 2)); // OID + NULL
+        varbind.push_back(static_cast<uint8_t>(oid_lenght + 4)); // OID + NULL + ASN1 SEQ + ASN1 OID
         varbind.push_back(ASN1_OID);
         varbind.push_back(static_cast<uint8_t>(oid_lenght));
         varbind.insert(varbind.end(), oid.begin(),oid.end()); // OID
@@ -135,22 +138,56 @@ std::vector<uint8_t> SNMP_PacketBuilder::make_varbindlist(const std::vector<std:
         ss << std::hex << std::uppercase << total_length;
         varbindlists.insert(varbindlists.end(), varbind.begin(),varbind.end());
     }
-    varbindlists.insert(varbindlists.begin() + 1, static_cast<uint8_t>(total_length));
-    return varbindlists;
+
+    std::vector<uint8_t> result;
+    result.push_back(ASN1_SEQUENCE);
+    result.push_back(static_cast<uint8_t>(total_length));
+    result.insert(result.end(), varbindlists.begin(), varbindlists.end());
+    return result;
 }
 
 std::vector<uint8_t> SNMP_PacketBuilder::make_getrequest_PDU(std::vector<uint8_t> varbindlist) {
     std::vector<uint8_t> getrequest_packet;
-    auto total_length = static_cast<uint8_t>(varbindlist.size() + 3); // id + err +err
+    size_t total_length = 6 + 3 + 3 + varbindlist.size();
+
 
     getrequest_packet.push_back(SNMP_GETREQUEST_TAG);
     getrequest_packet.push_back(total_length);
-    getrequest_packet.push_back(ERROR_STATUS); //todo id counter meanwhile 0
 
-    getrequest_packet.push_back(ERROR_STATUS); // err status
-    getrequest_packet.push_back(ERROR_INDEX); // err index
+    // request-id 4b = 1
+    getrequest_packet.push_back(0x02); // INTEGER
+    getrequest_packet.push_back(0x04); // length
+    getrequest_packet.push_back(0x00);
+    getrequest_packet.push_back(0x00);
+    getrequest_packet.push_back(0x00);
+    getrequest_packet.push_back(0x01);
+
+    // error-status 1b = 0
+    getrequest_packet.push_back(0x02); // INTEGER
+    getrequest_packet.push_back(0x01); // length
+    getrequest_packet.push_back(0x00);
+
+    // error-index 1b = 0
+    getrequest_packet.push_back(0x02); // INTEGER
+    getrequest_packet.push_back(0x01); // length
+    getrequest_packet.push_back(0x00);
     getrequest_packet.insert(getrequest_packet.end(), varbindlist.begin(), varbindlist.end());
 
     return getrequest_packet;
+
+}
+
+std::vector<uint8_t> SNMP_PacketBuilder::make_message(std::vector<uint8_t> getrequest_PDU) {
+    std::vector<uint8_t> message;
+
+    size_t total_length = sizeof(SNMP_v2c_VERSION_ARRAY) + sizeof(COMMUNITY_ARRAY) + getrequest_PDU.size();
+
+    message.push_back(ASN1_SEQUENCE);
+    message.push_back(total_length);
+    message.insert(message.end(), SNMP_v2c_VERSION_ARRAY, SNMP_v2c_VERSION_ARRAY + 3);
+    message.insert(message.end(), COMMUNITY_ARRAY, COMMUNITY_ARRAY + 8);
+    message.insert(message.end(),getrequest_PDU.begin(),getrequest_PDU.end());
+    return message;
+
 
 }
