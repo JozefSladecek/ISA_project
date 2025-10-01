@@ -14,6 +14,7 @@
 #include <iomanip>
 #include "SNMP_PacketBuilder.h"
 #include "SNMP_client.h"
+#include "SNMP_parser.h"
 
 //todo check about static classes and helper functions
 
@@ -433,7 +434,11 @@ int main(int argc, char* argv[]) {
 
     client.SNMP_send(packet_to_send);
 
-    client.SMNP_recieve();
+    std::vector<uint8_t> recieved_packet = client.SNMP_receive();
+
+
+    SNMP_parser parser;
+    parser.parse_response(recieved_packet);
 
 
     //std::cout << "Resolved IP: " << ip << "\n";

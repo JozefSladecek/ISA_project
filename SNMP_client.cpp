@@ -42,22 +42,25 @@ int SNMP_client::SNMP_send(const std::vector<uint8_t>& packet) {
     return 0;
 }
 
-int SNMP_client::SMNP_recieve() {
-    uint8_t buffer[1024];
+std::vector<uint8_t> SNMP_client::SNMP_receive() {
+    std::vector<uint8_t> buffer(1024);
     socklen_t addr_len = sizeof(server_addr);
 
-    int received = recvfrom(socket_fd, buffer, sizeof(buffer), 0,
+    int received = recvfrom(socket_fd, buffer.data(), buffer.size(), 0,
                             (struct sockaddr*)&server_addr, &addr_len);
 
     if (received < 0) {
         std::cerr << "Error while receiving\n";
         close(socket_fd);
-        return 1;
+        return {};
     }
-    print_answer(buffer,received);
 
-    return 0;
+    buffer.resize(received);  // uprav veľkosť podľa skutočne prijatých bajtov
+    print_answer(buffer);
+
+    return buffer;
 }
+
 
 SNMP_client::~SNMP_client() {
     if (socket_fd >= 0) close(socket_fd);
@@ -81,20 +84,21 @@ std::string SNMP_client::resolveIP(const std::string &target) {
 
 
 // AI GENERATED
-void SNMP_client::print_answer(uint8_t buffer[1024], int received) {
+void SNMP_client::print_answer(const std::vector<uint8_t>& buffer) {
+    size_t idx = 0;
+    auto received = buffer.size();
+
     std::cout << "\n=== SNMP Response Debug ===" << std::endl;
     std::cout << "Received " << received << " bytes\n" << std::endl;
 
-    // Vypíš raw hex dump
+    // Raw hex dump
     std::cout << "Raw Hex Dump:" << std::endl;
-    for (int i = 0; i < received; i++) {
+    for (size_t i = 0; i < received; i++) {
         std::cout << std::hex << std::setw(2) << std::setfill('0')
-                  << (int)buffer[i] << " ";
+                  << static_cast<int>(buffer[i]) << " ";
         if ((i + 1) % 16 == 0) std::cout << std::endl;
     }
     std::cout << std::dec << "\n" << std::endl;
-
-    int idx = 0;
 
     // SNMP packet začína SEQUENCE
     if (buffer[idx] != 0x30) {

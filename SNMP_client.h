@@ -6,7 +6,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
-#include <netinet/in.h>  // <-- tu je sockaddr_in
+#include <netinet/in.h>  /
 
 #ifndef ISA_SNMP_CLIENT_H
 #define ISA_SNMP_CLIENT_H
@@ -16,7 +16,7 @@ class SNMP_client {
 public:
     SNMP_client(const std::string& ip);
     int SNMP_send(const std::vector<uint8_t>& packet);
-    int SMNP_recieve();
+    std::vector<uint8_t> SNMP_receive();
     ~SNMP_client();
 
 private:
@@ -25,7 +25,7 @@ private:
     int port;
     struct sockaddr_in server_addr{};
     static std::string resolveIP(const std::string &target);
-    static void print_answer(uint8_t buffer[1024],int received);
+    static void print_answer(const std::vector<uint8_t>& buffer);
 };
 
 
