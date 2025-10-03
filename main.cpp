@@ -12,6 +12,8 @@
 #include <bitset>
 #include <sstream>
 #include <iomanip>
+
+#include "OTELExporter.h"
 #include "SNMP_PacketBuilder.h"
 #include "SNMP_client.h"
 #include "SNMP_parser.h"
@@ -438,7 +440,12 @@ int main(int argc, char* argv[]) {
 
 
     SNMP_parser parser;
-    parser.parse_response(recieved_packet);
+    SNMPResponse parsed_response = parser.parse_response(recieved_packet);
+
+    OTELExporter exporter(ip, 4318,false);
+
+    exporter.export_gauge(parsed_response);
+
 
 
     //std::cout << "Resolved IP: " << ip << "\n";

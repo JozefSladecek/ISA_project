@@ -6,7 +6,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
-#include <netinet/in.h>  /
+#include <netinet/in.h>
 
 #ifndef ISA_SNMP_CLIENT_H
 #define ISA_SNMP_CLIENT_H

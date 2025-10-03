@@ -1,6 +1,6 @@
 //
 // Created by jozef on 10/1/25.
-//
+// https://www.rfc-editor.org/rfc/rfc3416.html#section-3
 
 #include "SNMP_parser.h"
 
@@ -10,7 +10,7 @@
 #include <iostream>
 
 SNMPResponse SNMP_parser::parse_response(const std::vector<uint8_t>& data) {
-    SNMPResponse response;
+    //SNMPResponse response;
 
 
     read_sequence(data);
@@ -34,7 +34,7 @@ SNMPResponse SNMP_parser::parse_response(const std::vector<uint8_t>& data) {
     std ::cout << com_string << " com strign \n";
     std::cout << offset << "\n";
 
-    SNMPResponse PDU = read_getresponse_pdu(data);
+    SNMPResponse response = read_getresponse_pdu(data);
 
 
     return response;
