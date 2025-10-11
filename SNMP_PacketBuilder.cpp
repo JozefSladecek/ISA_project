@@ -22,6 +22,11 @@ constexpr uint8_t COMMUNITY_ARRAY[8] = {0x04,0x06,'p','u','b','l','i','c'}; // O
 
 #include "SNMP_PacketBuilder.h"
 
+uint32_t SNMP_PacketBuilder::request_id_counter = 1; // id
+
+uint32_t SNMP_PacketBuilder::get_next_request_id() {
+    return request_id_counter++;
+}
 
 std::vector<std::string> SNMP_PacketBuilder::fileLoad(const std::string& filename) {
     std::vector<std::string> oids;
@@ -151,16 +156,20 @@ std::vector<uint8_t> SNMP_PacketBuilder::make_getrequest_PDU(std::vector<uint8_t
     size_t total_length = 6 + 3 + 3 + varbindlist.size();
 
 
+
     getrequest_packet.push_back(SNMP_GETREQUEST_TAG);
     getrequest_packet.push_back(total_length);
 
+    uint32_t req_id = get_next_request_id();
+    std::cout << "Generated Request ID: " << req_id << std::endl;
     // request-id 4b = 1
     getrequest_packet.push_back(0x02); // INTEGER
     getrequest_packet.push_back(0x04); // length
-    getrequest_packet.push_back(0x00);
-    getrequest_packet.push_back(0x00);
-    getrequest_packet.push_back(0x00);
-    getrequest_packet.push_back(0x01);
+    getrequest_packet.push_back((req_id >> 24) & 0xFF);
+    getrequest_packet.push_back((req_id >> 16) & 0xFF);
+    getrequest_packet.push_back((req_id >> 8) & 0xFF);
+    getrequest_packet.push_back(req_id & 0xFF);
+
 
     // error-status 1b = 0
     getrequest_packet.push_back(0x02); // INTEGER

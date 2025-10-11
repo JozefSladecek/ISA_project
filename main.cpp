@@ -13,6 +13,12 @@
 #include <sstream>
 #include <iomanip>
 
+#include <csignal>
+#include <atomic>
+#include <chrono>
+#include <thread>
+
+
 #include "OTELExporter.h"
 #include "SNMP_PacketBuilder.h"
 #include "SNMP_client.h"
@@ -36,6 +42,14 @@ std::vector<uint8_t> testpacket = {
     0x06, 0x08, 0x2b,0x06,0x01,0x02,0x01,0x01,0x01,0x00, // OID 1.3.6.1.2.1.1.1.0
     0x05, 0x00              // Value: NULL
 };
+
+std::atomic<bool> keep_running(true);
+
+void signal_handler(int signal) {
+    if (signal == SIGINT) {
+        keep_running = false;
+    }
+}
 
 #define SNMP_port 161
 constexpr int OID_FIRST_BYTE_FACTOR = 40;
@@ -123,248 +137,8 @@ std::string resolveIP(const std::string &target) {
 }
 
 
-// uint8_t first_byte;
-// uint8_t first_number;
-// uint8_t second_number;
-//
-// for (int i =0; i < all_oids_encoded.size(); ++i) {
-//     first_number = all_oids_encoded[i][0];
-//     second_number = all_oids_encoded[i][1];
-//     uint8_t first_byte = OID_FIRST_BYTE_FACTOR * first_number + second_number;
-// }
-// class SNMP_PacketBuilder {
-// public:
-//     static std::vector<std::string> fileLoad(const std::string& filename);
-//     static std::vector<std::vector<uint32_t>> parse_oids_to_ints(const std::vector<std::string>& oids);
-//     static std::vector<uint8_t> encode_oids_to_ber(const std::vector<uint32_t>& oid_array);
-//     static std::vector<std::vector<uint8_t>> make_varbind(const std::vector<std::vector<uint8_t>> encoded_oids_array);
-//     static std::vector<uint8_t> make_varbindlist(const std::vector<std::vector<uint8_t>> oid_array);
-//     static std::vector<uint8_t> make_getrequest_PDU(std::vector<uint8_t>  varbindlist);
-// };
-//
-//
-// std::vector<std::string> SNMP_PacketBuilder::fileLoad(const std::string& filename) {
-//     std::vector<std::string> oids;
-//     std::ifstream infile(filename);
-//
-//     if (!infile.is_open()) {
-//         std::cerr << "Error: Cannot open file " << filename << "\n";
-//         return oids;
-//     }
-//
-//     std::string line;
-//     while (std::getline(infile, line)) {
-//         if (line.empty() || line[0] == '#') continue;
-//         oids.push_back(line);
-//     }
-//
-//     return oids;
-// }
-//
-// std::vector<std::vector<uint32_t>> SNMP_PacketBuilder::parse_oids_to_ints(const std::vector<std::string>& oids) {
-//     std::stringstream ss;
-//     std::string item;
-//     std::vector<std::vector<uint32_t>> all_oids_encoded;
-//
-//     // convertion of array of string arrays to array of int arrays without '.'
-//     for (const auto& oid : oids) {
-//         std::stringstream ss(oid);
-//         std::vector<uint32_t> result; // new result for each oid
-//         while (std::getline(ss,item,'.')) {
-//             int num = std::stoi(item);
-//             result.push_back(static_cast<uint32_t>(num));    // string -> uint
-//             //std::cout << item << "\n";
-//         }
-//         all_oids_encoded.push_back(result); // array of arrays
-//
-//     }
-//
-//     return all_oids_encoded;
-// }
-//
-// std::vector<uint8_t> SNMP_PacketBuilder::encode_oids_to_ber(const std::vector<uint32_t>& oid_array) {
-//     std::vector<uint8_t> oid_in_ber;
-//
-//     uint32_t first_byte = oid_array[0]*40 + oid_array[1];
-//     oid_in_ber.push_back(static_cast<uint8_t>(first_byte));
-//
-//     for (int i = 2; i < oid_array.size(); i++) {
-//         uint32_t value = oid_array[i];
-//         std::vector<uint8_t> bytes;
-//         do {
-//             uint8_t byte = value & 0x7F;
-//             bytes.insert(bytes.begin(), byte);
-//             value >>= 7;
-//         } while (value > 0);
-//
-//         for (size_t j = 0; j < bytes.size() - 1; ++j) {
-//             bytes[j] |= 0x80;
-//         }
-//
-//         oid_in_ber.insert(oid_in_ber.end(), bytes.begin(), bytes.end());
-//     }
-//
-//     return oid_in_ber;
-// }
-//
-// std::vector<std::vector<uint8_t>> SNMP_PacketBuilder::make_varbind(const std::vector<std::vector<uint8_t>> encoded_oids_array) {
-//     std::vector<std::vector<uint8_t>> varbinds;
-//     for (const auto& oid : encoded_oids_array) {
-//         std::vector<uint8_t> varbind;
-//         uint32_t oid_lenght = oid.size();
-//         std::stringstream ss;
-//         ss << std::hex << std::uppercase << oid_lenght; // make hex value
-//         varbind.push_back(ASN1_SEQUENCE);
-//         varbind.push_back(static_cast<uint8_t>(oid_lenght + 2)); // OID + NULL
-//         varbind.push_back(ASN1_OID);
-//         varbind.push_back(static_cast<uint8_t>(oid_lenght));
-//         varbind.insert(varbind.end(), oid.begin(),oid.end()); // OID
-//         varbind.push_back(0x05);       // NULL type
-//         varbind.push_back(0x00);
-//
-//         varbinds.push_back(varbind);
-//
-//         /// Some PDUs are concerned
-//         // only with the name of a variable and not its value (e.g., the
-//         // GetRequest-PDU).  In this case, the value portion of the binding is
-//         // ignored by the protocol entity.  However, the value portion must
-//         // still have valid ASN.1 syntax and encoding.  It is recommended that
-//         // the ASN.1 value NULL be used for the value portion of such bindings.
-//         //std::cout << "OID length in hex: " << ss.str() << "\n";
-//     }
-//     return varbinds;
-//
-//
-//     // int oid_index = 1;
-//     // for (const auto& ber_oid : encoded_oids_array) {
-//     //     std::cout << "OID " << oid_index++ << ": ";
-//     //     for (auto b : ber_oid) {
-//     //         std::cout << "0x"
-//     //                   << std::hex << std::setw(2) << std::setfill('0')
-//     //                   << static_cast<int>(b) << " ";
-//     //     }
-//     //     std::cout << std::dec << "\n";
-//     // }
-// }
-//
-// std::vector<uint8_t> SNMP_PacketBuilder::make_varbindlist(const std::vector<std::vector<uint8_t>> varbinds_array) {
-//     std::vector<uint8_t> varbindlists;
-//
-//     uint32_t total_length = 0;
-//
-//     for (const auto& varbind : varbinds_array) {
-//         total_length += varbind.size();
-//         std::stringstream ss;
-//         ss << std::hex << std::uppercase << total_length;
-//         varbindlists.insert(varbindlists.end(), varbind.begin(),varbind.end());
-//     }
-//     varbindlists.insert(varbindlists.begin() + 1, static_cast<uint8_t>(total_length));
-//     return varbindlists;
-// }
-//
-// std::vector<uint8_t> SNMP_PacketBuilder::make_getrequest_PDU(std::vector<uint8_t> varbindlist) {
-//     std::vector<uint8_t> getrequest_packet;
-//     auto total_length = static_cast<uint8_t>(varbindlist.size() + 3); // id + err +err
-//
-//     getrequest_packet.push_back(SNMP_GETREQUEST_TAG);
-//     getrequest_packet.push_back(total_length);
-//     getrequest_packet.push_back(ERROR_STATUS); //todo id counter meanwhile 0
-//
-//     getrequest_packet.push_back(ERROR_STATUS); // err status
-//     getrequest_packet.push_back(ERROR_INDEX); // err index
-//     getrequest_packet.insert(getrequest_packet.end(), varbindlist.begin(), varbindlist.end());
-//
-//     return getrequest_packet;
-//
-// }
-//
-// class SNMP_client {
-//     public:
-//
-//     std::string target_ip;
-//     int socket_fd;
-//     int port;
-//     struct sockaddr_in server_addr{};
-//
-//     // construct
-//     SNMP_client(const std::string& ip)
-//         : target_ip(resolveIP(ip)), port(SNMP_port)
-//     {
-//         socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
-//         if (socket_fd < 0) {
-//             perror("Error while opening socket");
-//             socket_fd = -1;
-//         }
-//     }
-//
-//     int SNMP_send(const std::vector<uint8_t>& packet) {
-//         server_addr.sin_family = AF_INET;
-//         server_addr.sin_port = htons(port);
-//
-//         if (inet_pton(AF_INET, target_ip.c_str(), &server_addr.sin_addr) <= 0) {
-//             std::cerr << "Invalid IP address\n";
-//             close(socket_fd);
-//             socket_fd = -1;
-//             return 1;
-//         }
-//
-//         int sent = sendto(socket_fd, packet.data(), packet.size(), 0,
-//                      (struct sockaddr*)&server_addr, sizeof(server_addr));
-//
-//         if (sent < 0) { // size of packet
-//             std::cerr << "Error while sending\n";
-//             close(socket_fd);
-//             socket_fd = -1;
-//             return 1;
-//         }
-//         //std::cout << "Packet sent (" << sent << " bytes)\n";
-//         return 0;
-//     }
-//
-//     int SMNP_recieve() {
-//         server_addr.sin_family = AF_INET;
-//         server_addr.sin_port = htons(161);
-//
-//         if (inet_pton(AF_INET, target_ip.c_str(), &server_addr.sin_addr) <= 0) {
-//             std::cerr << "Invalid IP address\n";
-//             close(socket_fd);
-//             socket_fd = -1;
-//             return 1;
-//         }
-//
-//         uint8_t buffer[1024];
-//         socklen_t addr_len = sizeof(server_addr);
-//
-//         int received = recvfrom(socket_fd, buffer, sizeof(buffer), 0,
-//                        (struct sockaddr*)&server_addr, &addr_len);
-//
-//         if (received < 0) {
-//             std::cerr << "Error while receiving\n";
-//             close(socket_fd);
-//             return 1;
-//         }
-//
-//         std::cout << "Received response (" << received << " bytes):\n";
-//         for (int i = 0; i < received; ++i) {
-//             std::cout << std::hex << std::setw(2) << std::setfill('0')
-//                       << (int)buffer[i] << " ";
-//             if ((i+1) % 16 == 0) std::cout << "\n";
-//         }
-//         std::cout << "\n";
-//         return 0;
-//
-//     }
-//
-//
-//     // deconstruct
-//     ~SNMP_client() {
-//         if (socket_fd >= 0) close(socket_fd);
-//     }
-//
-// };
-
-
 int main(int argc, char* argv[]) {
+    signal(SIGINT, signal_handler);
 
     Config config = parseArgs(argc, argv);
 
@@ -398,10 +172,10 @@ int main(int argc, char* argv[]) {
 
     std::vector<uint8_t> varbinds_list = SNMP_PacketBuilder::make_varbindlist(varbinds);
 
-    std::vector<uint8_t> getrequestPDU = SNMP_PacketBuilder::make_getrequest_PDU(varbinds_list);
-
-
-    std::vector<uint8_t> packet_to_send = SNMP_PacketBuilder::make_message(getrequestPDU);
+    // std::vector<uint8_t> getrequestPDU = SNMP_PacketBuilder::make_getrequest_PDU(varbinds_list);
+    //
+    //
+    // std::vector<uint8_t> packet_to_send = SNMP_PacketBuilder::make_message(getrequestPDU);
 
     int index = 1;
     for (const auto& vb : varbinds) {
@@ -424,46 +198,69 @@ int main(int argc, char* argv[]) {
 
 
 
-    print_packet(packet_to_send);
+   // print_packet(packet_to_send);
     //print_packet(testpacket);
 
     std::string ip = resolveIP(config.target);
 
+    //SNMP_client client(ip, config.timeout);
+    //SNMP_parser parser;
+    OTELExporter exporter(ip, 4318, config.verbose);
+
+    std::vector<uint8_t> received_packet;
 
 
-    SNMP_client client(ip);
+    SNMP_client client(ip,config.timeout);
 
+   // int retries = 0;
+   // bool received = false;
 
-    client.SNMP_send(packet_to_send);
+    while (keep_running) {
+        SNMP_parser parser;
+        bool received = false;
+        auto start_time = std::chrono::steady_clock::now();
+        //SNMP_PacketBuilder::get_next_request_id();
+        uint32_t current_req_id = SNMP_PacketBuilder::request_id_counter;
+        std::vector<uint8_t> getrequestPDU = SNMP_PacketBuilder::make_getrequest_PDU(varbinds_list);
+        std::vector<uint8_t> packet_to_send = SNMP_PacketBuilder::make_message(getrequestPDU);
+        for (int attempt = 0; attempt <= config.retries; ++attempt) {
 
-    std::vector<uint8_t> recieved_packet = client.SNMP_receive();
+            client.SNMP_send(packet_to_send);          // send SNMP GET
+            std::vector<uint8_t> received_packet = client.SNMP_receive();  // get answer
 
+        if(!received_packet.empty()) {
+           // SNMP_parser parser;
+            SNMPResponse parsed_response = parser.parse_response(received_packet);
+            if(parsed_response.request_id != current_req_id) {
+                std::cerr << "[WARN] Received response for old Request ID "
+                          << parsed_response.request_id
+                          << ", expected " << SNMP_PacketBuilder::request_id_counter << "\n";
+                continue; // ignoruj odpoveď
+            }
 
-    SNMP_parser parser;
-    SNMPResponse parsed_response = parser.parse_response(recieved_packet);
+            exporter.export_gauge(parsed_response);   // export do OTLP
+            received = true;
+            break;
+        } else {
+            std::cerr << "[WARN] No response (timeout), retry "
+                      << attempt + 1 << "/" << (config.retries + 1) << "\n";
+        }
 
-    OTELExporter exporter(ip, 4318,false);
+        }
+        if (!received) {
+            std::cerr << "[ERROR] SNMP agent did not respond after " << config.retries << " retries\n";
+            //return 1;
+        }
 
-    exporter.export_gauge(parsed_response);
+        auto elapsed = std::chrono::steady_clock::now() - start_time;
+        auto sleep_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::seconds(config.interval) - elapsed
+        );
+        if(sleep_ms.count() > 0) {
+            std::this_thread::sleep_for(sleep_ms);
+        }
+    }
 
-
-
-    //std::cout << "Resolved IP: " << ip << "\n";
-
-    // for (const auto& oid : oids) {
-    //     std::cout << oid << "\n";
-    // }
-
-    // std::cout << "Target: " << target << "\n";
-    // std::cout << "Community: " << community << "\n";
-    // std::cout << "OIDs file: " << oids_file << "\n";
-    // std::cout << "OTEL endpoint: " << endpoint << "\n";
-    // std::cout << "Interval: " << interval << "s\n";
-    // std::cout << "Retries: " << retries << "\n";
-    // std::cout << "Timeout: " << timeout << "ms\n";
-    // std::cout << "Port: " << port << "\n";
-    // std::cout << "Verbose: " << (verbose ? "true" : "false") << "\n";
 
     return 0;
 }
-

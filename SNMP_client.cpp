@@ -9,13 +9,20 @@
 
 #define SNMP_port 161
 
-SNMP_client::SNMP_client(const std::string& ip)
+SNMP_client::SNMP_client(const std::string& ip,int timeout)
     : target_ip(resolveIP(ip)), port(SNMP_port)
 {
     socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (socket_fd < 0) {
         perror("Error while opening socket");
         socket_fd = -1;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = timeout / 1000;
+    tv.tv_usec = (timeout % 1000) * 1000;
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv)) < 0) {
+        perror("Error while setting socket timeout");
     }
 }
 
@@ -50,12 +57,15 @@ std::vector<uint8_t> SNMP_client::SNMP_receive() {
                             (struct sockaddr*)&server_addr, &addr_len);
 
     if (received < 0) {
-        std::cerr << "Error while receiving\n";
-        close(socket_fd);
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            std::cerr << "Timeout: No SNMP response received.\n";
+        } else {
+            perror("Error while receiving");
+        }
         return {};
     }
 
-    buffer.resize(received);  // uprav veľkosť podľa skutočne prijatých bajtov
+    buffer.resize(received);
     print_answer(buffer);
 
     return buffer;

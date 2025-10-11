@@ -14,10 +14,18 @@
 
 class SNMP_client {
 public:
-    SNMP_client(const std::string& ip);
+    SNMP_client(const std::string& ip,int timeout);
     int SNMP_send(const std::vector<uint8_t>& packet);
     std::vector<uint8_t> SNMP_receive();
     ~SNMP_client();
+
+    void set_receive_timeout(int seconds) {
+        struct timeval tv;
+        tv.tv_sec = seconds;
+        tv.tv_usec = 0;
+        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+    // test
 
 private:
     std::string target_ip;
