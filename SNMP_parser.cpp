@@ -1,5 +1,7 @@
-//
-// Created by jozef on 10/1/25.
+// Projekt: ISA - snmp2otel
+// Autor: Jozef Sládeček
+// Login: xsladej00
+// Dátum: 17.11.2025
 // https://www.rfc-editor.org/rfc/rfc3416.html#section-3
 
 #include "SNMP_parser.h"
@@ -10,32 +12,22 @@
 #include <iostream>
 
 SNMPResponse SNMP_parser::parse_response(const std::vector<uint8_t>& data) {
-    //SNMPResponse response;
-
-
     read_sequence(data);
+    read_length(data);
+    SNMPResponse response;
 
-    size_t length = read_length(data);
-
-    std::cout << offset << "\n";
-    std::cout << length << "\n";
-
-
+    if (data.size() < 20 || data[0] != 0x30) {
+        std::cerr << "[ERROR] Invalid SNMP packet\n";
+        return response;
+    }
     int32_t version = read_integer(data);
-
-    std::cout << version << " verzia \n";
-
     if (version != 1) {
-        std::cout << "wrong version" << " \n";
+        std::cerr << "wrong version" << " \n";
+        return response;
     }
 
     std::string com_string = read_octet_string(data);
-
-    std ::cout << com_string << " com strign \n";
-    std::cout << offset << "\n";
-
-    SNMPResponse response = read_getresponse_pdu(data);
-
+    response = read_getresponse_pdu(data);
 
     return response;
 }
@@ -55,13 +47,9 @@ size_t SNMP_parser::read_length(const std::vector<uint8_t>& data) {
         length = (length << 8) | data[offset++];  // concatenation
     }
     return length;
-
-
-    return 0;
 }
 
 int32_t SNMP_parser::read_integer(const std::vector<uint8_t>& data) {
-
     uint8_t tag = data[offset];
     if (tag != 0x02) {
         std::cerr << "expected INTEGER";
@@ -73,7 +61,6 @@ int32_t SNMP_parser::read_integer(const std::vector<uint8_t>& data) {
     for (size_t i = 0; i < length; i++) {
         value = (value << 8) | data[offset++]; // concatenation for value depends on lenght
     }
-   // std::cout << "skoncil som" << "\n";
     return value;
 }
 
@@ -81,19 +68,12 @@ SNMPVarbind SNMP_parser::read_single_varbind(const std::vector<uint8_t>& data) {
     SNMPVarbind varbind;
 
     read_sequence(data);  // varbind SEQUENCE
-    size_t varbind_length = read_length(data);
-
+    read_length(data);
 
     varbind.oid = read_oid(data);
 
     varbind.value = read_value(data);
 
-    std::cout << "VarBind OID: ";
-    for (size_t i = 0; i < varbind.oid.size(); i++) {
-        if (i > 0) std::cout << ".";
-        std::cout << varbind.oid[i];
-    }
-    std::cout << "  Value: " << varbind.value << std::endl;
 
     return varbind;
 }
@@ -117,7 +97,7 @@ std::string SNMP_parser::read_octet_string(const std::vector<uint8_t>& data) {
 void SNMP_parser::read_sequence(const std::vector<uint8_t>& data) {
 
     if (data[offset] != 0x30) {
-        std::cout << "SNMP_parser::read_sequence error" << std::endl; // todo
+        std::cerr<< "SNMP_parser::read_sequence error" << std::endl;
     }
     offset++;
 }
@@ -125,7 +105,7 @@ void SNMP_parser::read_sequence(const std::vector<uint8_t>& data) {
 void SNMP_parser::read_object_id(const std::vector<uint8_t>& data) {
 
     if (data[offset] != 0x06) {
-        std::cout << "SNMP_parser::read_object_id error" << std::endl; // todo
+        std::cerr << "SNMP_parser::read_object_id error" << std::endl;
     }
     offset++;
 }
@@ -136,9 +116,10 @@ SNMPResponse SNMP_parser::read_getresponse_pdu(const std::vector<uint8_t>& data)
     uint8_t tag = data[offset++];
     if (tag != 0xa2) {
         std::cerr << "Expected GetResponse PDU (0xA2)\n";
+        return pdu;
     }
 
-    size_t pdu_length = read_length(data);
+    read_length(data);
 
     pdu.request_id = read_integer(data);
     read_integer(data); // err status
@@ -180,12 +161,6 @@ std::vector<uint32_t> SNMP_parser::read_oid(const std::vector<uint8_t>& data) {
         } while (byte & 0x80); // msb is set to 1
         oid.push_back(value);
     }
-    // std::cout << "\nComplete OID: ";
-    // for (size_t i = 0; i < oid.size(); i++) {
-    //     if (i > 0) std::cout << ".";
-    //     std::cout << oid[i];
-    // }
-    // std::cout << std::endl;
     return oid;
 }
 
@@ -206,22 +181,41 @@ std::string SNMP_parser::read_value(const std::vector<uint8_t>& data) {
             read_length(data);
             return "NULL";
         }
+
         case 0x43: {  // TimeTicks
             offset++;
             size_t length = read_length(data);
-            std::cout << "Reading TimeTicks, length = " << length << ", offset = " << offset << std::endl;
             uint32_t timeticks = 0;
             for (size_t i = 0; i < length; i++) {
-                std::cout << "Byte " << i << ": 0x" << std::hex << (int)data[offset] << std::dec << std::endl;
                 timeticks = (timeticks << 8) | data[offset++];
             }
             return std::to_string(timeticks);
+        }
+
+        case 0x41: {  // Counter32
+            offset++;
+            size_t length = read_length(data);
+            uint32_t counter = 0;
+            for (size_t i = 0; i < length; i++) {
+                counter = (counter << 8) | data[offset++];
+            }
+            return std::to_string(counter);
+        }
+
+        case 0x42: {  // Gauge32
+            offset++;
+            size_t length = read_length(data);
+            uint32_t gauge = 0;
+            for (size_t i = 0; i < length; i++) {
+                gauge = (gauge << 8) | data[offset++];
+            }
+            return std::to_string(gauge);
         }
         default:
             std::cerr << "Unsupported value tag: 0x"
                       << std::hex << static_cast<int>(tag) << std::dec
                       << std::endl;
-            offset++; // aspoň posuň offset aby si sa nezacyklil
+            offset++;
             return "";
     }
 

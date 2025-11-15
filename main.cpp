@@ -1,49 +1,26 @@
+// Projekt: ISA - snmp2otel
+// Autor: Jozef Sládeček
+// Login: xsladej00
+// Dátum: 17.11.2025
 #include <iostream>
 #include <unistd.h>
 #include <fstream>
-#include <iostream>
 #include <vector>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <cstring>
 #include <netdb.h>
-#include <bitset>
-#include <sstream>
-#include <iomanip>
-
-#include <csignal>
-#include <atomic>
 #include <chrono>
 #include <thread>
-
+#include <signal.h>
+#include <stdio.h>
 
 #include "OTELExporter.h"
 #include "SNMP_PacketBuilder.h"
 #include "SNMP_client.h"
 #include "SNMP_parser.h"
 
-//todo check about static classes and helper functions
 
-//https://learn.microsoft.com/sk-sk/windows/win32/seccertenroll/about-object-identifier?redirectedfrom=MSDN
-
-// test packet
-std::vector<uint8_t> testpacket = {
-    0x30, 0x29,             // Sequence, length 41
-    0x02, 0x01, 0x01,       // Version: v2c (1)
-    0x04, 0x06, 'p','u','b','l','i','c', // Community: "public"
-    0xa0, 0x1c,             // GetRequest PDU, length 28
-    0x02, 0x04, 0x00,0x00,0x00,0x01,     // Request ID: 1
-    0x02, 0x01, 0x00,       // Error status: 0
-    0x02, 0x01, 0x00,       // Error index: 0
-    0x30, 0x0e,             // Varbind list, length 14
-    0x30, 0x0c,             // Varbind, length 12
-    0x06, 0x08, 0x2b,0x06,0x01,0x02,0x01,0x01,0x01,0x00, // OID 1.3.6.1.2.1.1.1.0
-    0x05, 0x00              // Value: NULL
-};
-
-std::atomic<bool> keep_running(true);
+volatile sig_atomic_t keep_running = 1;
 
 void signal_handler(int signal) {
     if (signal == SIGINT) {
@@ -51,28 +28,24 @@ void signal_handler(int signal) {
     }
 }
 
-#define SNMP_port 161
-constexpr int OID_FIRST_BYTE_FACTOR = 40;
 
-#define ASN1_SEQUENCE 0x30
-#define ASN1_OID      0x06
-#define ASN1_NULL     0x05
-#define SNMP_GETREQUEST_TAG 0xA0
-
-#define ERROR_STATUS 0x00
-#define ERROR_INDEX 0x00
-
-void print_packet(const std::vector<uint8_t>& packet) {
-    std::cout << "Packet (" << packet.size() << " bytes):\n";
-    for (size_t i = 0; i < packet.size(); ++i) {
-        std::cout << "0x"
-                  << std::hex << std::setw(2) << std::setfill('0')
-                  << static_cast<int>(packet[i]) << " ";
-        if ((i + 1) % 16 == 0) std::cout << "\n"; // nový riadok po 16 bajtoch
-    }
-    std::cout << std::dec << "\n"; // späť na desiatkovú sústavu
+/// args parser
+void print_usage(const char* program_name) {
+    std::cout << "Usage: " << program_name << " -t target [-C community] -o oids_file -e endpoint "
+              << "[-i interval] [-r retries] [-T timeout] [-p port] [-v]\n\n"
+              << "Required arguments:\n"
+              << "  -t target       IP address or DNS name of SNMP agent\n"
+              << "  -o oids_file    File with OID list (one per line)\n"
+              << "  -e endpoint     OTEL endpoint URL (e.g., http://localhost:4318/v1/metrics)\n\n"
+              << "Optional arguments:\n"
+              << "  -C community    SNMP v2c community string (default: public)\n"
+              << "  -i interval     Polling interval in seconds (default: 10)\n"
+              << "  -r retries      Number of retries on timeout (default: 2)\n"
+              << "  -T timeout      SNMP query timeout in ms (default: 1000)\n"
+              << "  -p port         SNMP agent UDP port (default: 161)\n"
+              << "  -v              Verbose mode\n"
+              << "  -h              Show this help message\n";
 }
-//// args parser
 
 struct Config {
     std::string target;
@@ -91,154 +64,183 @@ Config parseArgs(int argc, char* argv[]) {
     Config config;
     int opt;
 
-    while ((opt = getopt(argc, argv, "t:C:o:e:i:r:T:p:v")) != -1) {
+    while ((opt = getopt(argc, argv, "t:C:o:e:i:r:T:p:vh")) != -1) {
         switch(opt) {
             case 't': config.target = optarg; break;
             case 'C': config.community = optarg; break;
             case 'o': config.oids_file = optarg; break;
             case 'e': config.endpoint = optarg; break;
-            case 'i': config.interval = std::stoi(optarg); break;  // stoi = string -> int
-            case 'r': config.retries = std::stoi(optarg); break;
-            case 'T': config.timeout = std::stoi(optarg); break;
-            case 'p': config.port = std::stoi(optarg); break;
-            case 'v': config.verbose = true; break;
+
+            case 'i':
+                try {
+                    config.interval = std::stoi(optarg);
+                    if (config.interval <= 0) {
+                        std::cerr << "Error: Interval must be > 0\n";
+                        exit(1);
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: Invalid interval value: " << optarg << "\n";
+                    exit(1);
+                }
+                break;
+
+            case 'r':
+                try {
+                    config.retries = std::stoi(optarg);
+                    if (config.retries < 0) {
+                        std::cerr << "Error: Retries must be >= 0\n";
+                        exit(1);
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: Invalid retries value: " << optarg << "\n";
+                    exit(1);
+                }
+                break;
+
+            case 'T':
+                try {
+                    config.timeout = std::stoi(optarg);
+                    if (config.timeout <= 0) {
+                        std::cerr << "Error: Timeout must be > 0\n";
+                        exit(1);
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: Invalid timeout value: " << optarg << "\n";
+                    exit(1);
+                }
+                break;
+
+            case 'p':
+                try {
+                    config.port = std::stoi(optarg);
+                    if (config.port <= 0 || config.port > 65535) {
+                        std::cerr << "Error: Port must be 1-65535\n";
+                        exit(1);
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: Invalid port value: " << optarg << "\n";
+                    exit(1);
+                }
+                break;
+
+            case 'v':
+                config.verbose = true;
+                break;
+
+            case 'h':
+                print_usage(argv[0]);
+                exit(0);
+
             default:
                 std::cerr << "Unknown option\n";
+                print_usage(argv[0]);
                 exit(1);
         }
     }
+
+    // required params
+    if (config.target.empty() || config.oids_file.empty() || config.endpoint.empty()) {
+        std::cerr << "Error: -t, -o, and -e are required\n\n";
+        print_usage(argv[0]);
+        exit(1);
+    }
+
     return config;
 }
-
 //// args parser
 
 
-// if adress in dns format return ip else return ip
-std::string resolveIP(const std::string &target) {
-    struct addrinfo hints{};
-    struct addrinfo *result;
-
-    hints.ai_family = AF_INET;      // IPv4
-    hints.ai_socktype = SOCK_DGRAM; // UDP
-
-    int status = getaddrinfo(target.c_str(), NULL, &hints, &result);
-    if (status != 0) {
-        std::cerr << "Error while getaddrinfo()\n";
-        return ""; // empty string means err
-    }
-
-    char ipStr[INET_ADDRSTRLEN];
-
-    struct sockaddr_in *ipv4 = (struct sockaddr_in *)result->ai_addr;
-    inet_ntop(AF_INET, &(ipv4->sin_addr), ipStr, sizeof(ipStr)); // to string
-
-    freeaddrinfo(result);
-    return ipStr;
-}
-
 
 int main(int argc, char* argv[]) {
-    signal(SIGINT, signal_handler);
+    // Install a SIGINT (Ctrl+C) handler so the program can exit gracefully.
+    struct sigaction sigIntHandler;
+    sigIntHandler.sa_handler = signal_handler;
+    sigemptyset(&sigIntHandler.sa_mask);
+    sigIntHandler.sa_flags = 0;
+
+    sigaction(SIGINT, &sigIntHandler, NULL);
+    sigaction(SIGTERM, &sigIntHandler, NULL);
 
     Config config = parseArgs(argc, argv);
 
+    std::vector<std::string> oids = SNMP_PacketBuilder::fileLoad(config.oids_file);
 
-    std::vector<std::string> oids = SNMP_PacketBuilder::fileLoad("oids.txt");
+    if (oids.empty()) {
+        std::cerr << "Error: No OIDs loaded from file\n";
+        return 1;
+    }
 
+    if (config.verbose) {
+        std::cout << "[DEBUG] Loaded " << oids.size() << " OID(s)\n";
+    }
 
     std::vector<std::vector<uint32_t>> all_oids_int;
-
-
     all_oids_int = SNMP_PacketBuilder::parse_oids_to_ints(oids);
 
     std::vector<std::vector<uint8_t>> all_oids_encoded;
-
     for (const auto& oid : all_oids_int) {
         all_oids_encoded.push_back(SNMP_PacketBuilder::encode_oids_to_ber(oid));
     }
 
-    int oid_index = 1;
-    for (const auto& ber_oid : all_oids_encoded) {
-        std::cout << "OID " << oid_index++ << ": ";
-        for (auto b : ber_oid) {
-            std::cout << "0x"
-                      << std::hex << std::setw(2) << std::setfill('0')
-                      << static_cast<int>(b) << " ";
-        }
-        std::cout << std::dec << "\n";
-    }
-
     std::vector<std::vector<uint8_t>> varbinds = SNMP_PacketBuilder::make_varbind(all_oids_encoded);
-
     std::vector<uint8_t> varbinds_list = SNMP_PacketBuilder::make_varbindlist(varbinds);
 
-    // std::vector<uint8_t> getrequestPDU = SNMP_PacketBuilder::make_getrequest_PDU(varbinds_list);
-    //
-    //
-    // std::vector<uint8_t> packet_to_send = SNMP_PacketBuilder::make_message(getrequestPDU);
-
-    int index = 1;
-    for (const auto& vb : varbinds) {
-        std::cout << "Varbind " << index++ << ": ";
-        for (auto b : vb) {
-            std::cout << "0x"
-                      << std::hex << std::setw(2) << std::setfill('0')
-                      << static_cast<int>(b) << " ";
+    if (config.verbose) {
+        int oid_index = 1;
+        for (const auto& ber_oid : all_oids_int) {
+            std::cout << "OID " << oid_index++ << ": ";
+            for (size_t i = 0; i < ber_oid.size(); ++i) {
+                std::cout << static_cast<int>(ber_oid[i]);
+                if (i != ber_oid.size() - 1) {
+                    std::cout << ".";
+                }
+            }
+            std::cout << "\n";
         }
-        std::cout << std::dec << "\n";
+
     }
 
-    std::cout << "Varbind list: ";
-    for (auto b : varbinds_list) {
-        std::cout << "0x"
-                  << std::hex << std::setw(2) << std::setfill('0')
-                  << (int)b << " ";
+    std::string ip = SNMP_client::resolveIP(config.target);
+    if (ip.empty()) {
+        std::cerr << "Error: Cannot resolve target '" << config.target << "'\n";
+        return 1;
     }
-    std::cout << std::dec << "\n";
 
+    if (config.verbose) {
+        std::cout << "[DEBUG] Resolved " << config.target << " -> " << ip << "\n";
+    }
 
-
-   // print_packet(packet_to_send);
-    //print_packet(testpacket);
-
-    std::string ip = resolveIP(config.target);
-
-    //SNMP_client client(ip, config.timeout);
-    //SNMP_parser parser;
-    OTELExporter exporter(ip, 4318, config.verbose);
-
+    OTELExporter exporter(config.target, config.endpoint, config.verbose);
     std::vector<uint8_t> received_packet;
 
-
-    SNMP_client client(ip,config.timeout);
-
-   // int retries = 0;
-   // bool received = false;
+    SNMP_client client(ip,config.timeout,config.port);
 
     while (keep_running) {
         SNMP_parser parser;
         bool received = false;
         auto start_time = std::chrono::steady_clock::now();
-        //SNMP_PacketBuilder::get_next_request_id();
         uint32_t current_req_id = SNMP_PacketBuilder::request_id_counter;
         std::vector<uint8_t> getrequestPDU = SNMP_PacketBuilder::make_getrequest_PDU(varbinds_list);
-        std::vector<uint8_t> packet_to_send = SNMP_PacketBuilder::make_message(getrequestPDU);
+        std::vector<uint8_t> packet_to_send = SNMP_PacketBuilder::make_message(getrequestPDU, config.community);
         for (int attempt = 0; attempt <= config.retries; ++attempt) {
 
             client.SNMP_send(packet_to_send);          // send SNMP GET
-            std::vector<uint8_t> received_packet = client.SNMP_receive();  // get answer
+            received_packet = client.SNMP_receive();  // get answer
 
         if(!received_packet.empty()) {
-           // SNMP_parser parser;
             SNMPResponse parsed_response = parser.parse_response(received_packet);
+            if (parsed_response.varbinds.empty()) {
+                std::cerr << "[WARN] Failed to parse SNMP response, retry\n";
+                continue;
+            }
             if(parsed_response.request_id != current_req_id) {
                 std::cerr << "[WARN] Received response for old Request ID "
                           << parsed_response.request_id
                           << ", expected " << SNMP_PacketBuilder::request_id_counter << "\n";
-                continue; // ignoruj odpoveď
+                continue; // ignore
             }
 
-            exporter.export_gauge(parsed_response);   // export do OTLP
+            exporter.export_gauge(parsed_response);   // export into OTLP
             received = true;
             break;
         } else {
@@ -249,18 +251,37 @@ int main(int argc, char* argv[]) {
         }
         if (!received) {
             std::cerr << "[ERROR] SNMP agent did not respond after " << config.retries << " retries\n";
-            //return 1;
         }
 
         auto elapsed = std::chrono::steady_clock::now() - start_time;
-        auto sleep_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::seconds(config.interval) - elapsed
+        auto interval_duration = std::chrono::seconds(config.interval);
+
+        if (elapsed >= interval_duration) {
+            if (config.verbose) {
+                auto overtime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    elapsed - interval_duration
+                );
+                std::cerr << "[WARN] SNMP polling took longer than interval ("
+                          << overtime.count() << "ms overtime)\n";
+            }
+            continue; // skip
+        }
+
+        auto sleep_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            interval_duration - elapsed
         );
-        if(sleep_ms.count() > 0) {
-            std::this_thread::sleep_for(sleep_ms);
+
+        if (config.verbose) {
+            std::cout << "[DEBUG] Sleeping for " << sleep_duration.count() << "ms\n";
+        }
+
+        auto remaining = sleep_duration;
+        while (keep_running && remaining.count() > 0) {
+            auto step = std::min(remaining, std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(step);
+            remaining -= step;
         }
     }
-
 
     return 0;
 }

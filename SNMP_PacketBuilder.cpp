@@ -1,12 +1,12 @@
-//
-// Created by jozef on 9/29/25.
-//
+// Projekt: ISA - snmp2otel
+// Autor: Jozef Sládeček
+// Login: xsladej00
+// Dátum: 17.11.2025
 
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
-#include <cstdint>
 #include "SNMP_PacketBuilder.h"
 #include "SNMP_client.h"
 
@@ -18,9 +18,7 @@
 #define ERROR_INDEX 0x00
 
 constexpr uint8_t SNMP_v2c_VERSION_ARRAY[3] = {0x02,0x01,0x01};
-constexpr uint8_t COMMUNITY_ARRAY[8] = {0x04,0x06,'p','u','b','l','i','c'}; // OCTET STRING,LENGHT OF 'PUBLIC', ..
 
-#include "SNMP_PacketBuilder.h"
 
 uint32_t SNMP_PacketBuilder::request_id_counter = 1; // id
 
@@ -33,14 +31,53 @@ std::vector<std::string> SNMP_PacketBuilder::fileLoad(const std::string& filenam
     std::ifstream infile(filename);
 
     if (!infile.is_open()) {
-        std::cerr << "Error: Cannot open file " << filename << "\n";
-        return oids;
+        std::cerr << "Error: Cannot open file '" << filename << "'\n";
+        std::cerr << "Make sure the file exists and is readable.\n";
+        exit(1);
     }
 
     std::string line;
+    int line_num = 0;
     while (std::getline(infile, line)) {
+        line_num++;
+
+        // Skip empty lines and comments
         if (line.empty() || line[0] == '#') continue;
+
+        // Trim whitespace
+        line.erase(0, line.find_first_not_of(" \t\r\n"));
+        line.erase(line.find_last_not_of(" \t\r\n") + 1);
+
+        if (line.empty()) continue;
+
+        // Basic OID validation (starts with digit, contains only digits and dots)
+        bool valid = true;
+        for (char c : line) {
+            if (!std::isdigit(c) && c != '.') {
+                valid = false;
+                break;
+            }
+        }
+
+        if (!valid) {
+            std::cerr << "Warning: Invalid OID format at line " << line_num
+                      << ": '" << line << "' (skipping)\n";
+            continue;
+        }
+
+        size_t last_dot = line.find_last_of('.');
+        if (last_dot == std::string::npos || line.substr(last_dot + 1) != "0") {
+            std::cerr << "Warning: OID at line " << line_num
+                      << " is not scalar (does not end with .0), skipping\n";
+            continue;
+        }
+
         oids.push_back(line);
+    }
+
+    if (oids.empty()) {
+        std::cerr << "Error: No valid OIDs found in file '" << filename << "'\n";
+        exit(1);
     }
 
     return oids;
@@ -58,7 +95,6 @@ std::vector<std::vector<uint32_t>> SNMP_PacketBuilder::parse_oids_to_ints(const 
         while (std::getline(ss,item,'.')) {
             int num = std::stoi(item);
             result.push_back(static_cast<uint32_t>(num));    // string -> uint
-            //std::cout << item << "\n";
         }
         all_oids_encoded.push_back(result); // array of arrays
 
@@ -67,13 +103,14 @@ std::vector<std::vector<uint32_t>> SNMP_PacketBuilder::parse_oids_to_ints(const 
     return all_oids_encoded;
 }
 
+//https://learn.microsoft.com/sk-sk/windows/win32/seccertenroll/about-object-identifier?redirectedfrom=MSDN
 std::vector<uint8_t> SNMP_PacketBuilder::encode_oids_to_ber(const std::vector<uint32_t>& oid_array) {
     std::vector<uint8_t> oid_in_ber;
 
     uint32_t first_byte = oid_array[0]*40 + oid_array[1];
     oid_in_ber.push_back(static_cast<uint8_t>(first_byte));
 
-    for (int i = 2; i < oid_array.size(); i++) {
+    for (size_t i = 2; i < oid_array.size(); i++) {
         uint32_t value = oid_array[i];
         std::vector<uint8_t> bytes;
         do {
@@ -115,21 +152,10 @@ std::vector<std::vector<uint8_t>> SNMP_PacketBuilder::make_varbind(const std::ve
         // ignored by the protocol entity.  However, the value portion must
         // still have valid ASN.1 syntax and encoding.  It is recommended that
         // the ASN.1 value NULL be used for the value portion of such bindings.
-        //std::cout << "OID length in hex: " << ss.str() << "\n";
     }
     return varbinds;
 
 
-    // int oid_index = 1;
-    // for (const auto& ber_oid : encoded_oids_array) {
-    //     std::cout << "OID " << oid_index++ << ": ";
-    //     for (auto b : ber_oid) {
-    //         std::cout << "0x"
-    //                   << std::hex << std::setw(2) << std::setfill('0')
-    //                   << static_cast<int>(b) << " ";
-    //     }
-    //     std::cout << std::dec << "\n";
-    // }
 }
 
 std::vector<uint8_t> SNMP_PacketBuilder::make_varbindlist(const std::vector<std::vector<uint8_t>>& varbinds_array) {
@@ -153,15 +179,12 @@ std::vector<uint8_t> SNMP_PacketBuilder::make_varbindlist(const std::vector<std:
 
 std::vector<uint8_t> SNMP_PacketBuilder::make_getrequest_PDU(std::vector<uint8_t> varbindlist) {
     std::vector<uint8_t> getrequest_packet;
-    size_t total_length = 6 + 3 + 3 + varbindlist.size();
-
-
+    size_t total_length = 6 + 3 + 3 + varbindlist.size(); // PDU structure: Request-ID (tag+len+4bytes=6) + error-status (tag+len+value=3) + error-index (tag+len+value=3) + VarBindList
 
     getrequest_packet.push_back(SNMP_GETREQUEST_TAG);
     getrequest_packet.push_back(total_length);
 
     uint32_t req_id = get_next_request_id();
-    std::cout << "Generated Request ID: " << req_id << std::endl;
     // request-id 4b = 1
     getrequest_packet.push_back(0x02); // INTEGER
     getrequest_packet.push_back(0x04); // length
@@ -186,17 +209,30 @@ std::vector<uint8_t> SNMP_PacketBuilder::make_getrequest_PDU(std::vector<uint8_t
 
 }
 
-std::vector<uint8_t> SNMP_PacketBuilder::make_message(std::vector<uint8_t> getrequest_PDU) {
+std::vector<uint8_t> SNMP_PacketBuilder::encode_community_string(const std::string& community) {
+    std::vector<uint8_t> encoded;
+    encoded.push_back(0x04);  // ASN.1 OCTET STRING tag
+    encoded.push_back(static_cast<uint8_t>(community.length()));  // length of string
+
+    for (char c : community) {
+        encoded.push_back(static_cast<uint8_t>(c));
+    }
+
+    return encoded;
+}
+
+std::vector<uint8_t> SNMP_PacketBuilder::make_message(std::vector<uint8_t> getrequest_PDU, const std::string& community) {
     std::vector<uint8_t> message;
 
-    size_t total_length = sizeof(SNMP_v2c_VERSION_ARRAY) + sizeof(COMMUNITY_ARRAY) + getrequest_PDU.size();
+    std::vector<uint8_t> community_encoded = encode_community_string(community);
+
+    size_t total_length = sizeof(SNMP_v2c_VERSION_ARRAY) + community_encoded.size() + getrequest_PDU.size();
 
     message.push_back(ASN1_SEQUENCE);
     message.push_back(total_length);
     message.insert(message.end(), SNMP_v2c_VERSION_ARRAY, SNMP_v2c_VERSION_ARRAY + 3);
-    message.insert(message.end(), COMMUNITY_ARRAY, COMMUNITY_ARRAY + 8);
+    message.insert(message.end(), community_encoded.begin(), community_encoded.end());
     message.insert(message.end(),getrequest_PDU.begin(),getrequest_PDU.end());
     return message;
-
 
 }

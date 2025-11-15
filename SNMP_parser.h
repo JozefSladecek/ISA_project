@@ -1,3 +1,8 @@
+// Projekt: ISA - snmp2otel
+// Autor: Jozef Sládeček
+// Login: xsladej00
+// Dátum: 17.11.2025
+
 #ifndef ISA_SNMP_PARSER_H
 #define ISA_SNMP_PARSER_H
 
@@ -11,7 +16,7 @@ struct SNMPVarbind {
 };
 
 struct SNMPResponse {
-    int32_t request_id;
+    uint32_t request_id;
     std::vector<SNMPVarbind> varbinds;
 };
 
