@@ -1,0 +1,32 @@
+{
+  "1.3.6.1.2.1.1.3.0": {
+    "name": "system.uptime",
+    "unit": "centiseconds",
+    "description": "System uptime since last reboot"
+  },
+  "1.3.6.1.2.1.1.7.0": {
+    "name": "system.services",
+    "unit": "",
+    "description": "Value indicating the set of services"
+  },
+  "1.3.6.1.4.1.2021.4.5.0": {
+    "name": "memory.total",
+    "unit": "KB",
+    "description": "Total memory"
+  },
+  "1.3.6.1.4.1.2021.4.6.0": {
+    "name": "memory.available",
+    "unit": "KB",
+    "description": "Available memory"
+  },
+  "1.3.6.1.4.1.2021.11.9.0": {
+    "name": "cpu.user",
+    "unit": "percent",
+    "description": "CPU user time"
+  },
+  "1.3.6.1.4.1.2021.11.11.0": {
+  "name": "cpu.idle",
+  "unit": "percent",
+  "description": "CPU idle time"
+}
+}

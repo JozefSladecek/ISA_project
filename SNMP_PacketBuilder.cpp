@@ -107,22 +107,30 @@ std::vector<std::vector<uint32_t>> SNMP_PacketBuilder::parse_oids_to_ints(const 
 std::vector<uint8_t> SNMP_PacketBuilder::encode_oids_to_ber(const std::vector<uint32_t>& oid_array) {
     std::vector<uint8_t> oid_in_ber;
 
+    // Encode the first two OID components into a single byte: (40 * X) + Y
     uint32_t first_byte = oid_array[0]*40 + oid_array[1];
     oid_in_ber.push_back(static_cast<uint8_t>(first_byte));
 
+    // Encode the remaining OID sub-identifiers using ASN.1 BER Base-128 encoding
     for (size_t i = 2; i < oid_array.size(); i++) {
         uint32_t value = oid_array[i];
         std::vector<uint8_t> bytes;
+        // Split the value into 7-bit chunks (Base-128)
+        // Least-significant chunk is processed first, but inserted at the front
+        // so the resulting order is correct.
         do {
             uint8_t byte = value & 0x7F;
             bytes.insert(bytes.begin(), byte);
             value >>= 7;
         } while (value > 0);
 
+        // Set the MSB=1 for all bytes except the last one
+        // (MSB=1 means "more bytes follow" according to BER rules)
         for (size_t j = 0; j < bytes.size() - 1; ++j) {
             bytes[j] |= 0x80;
         }
 
+        // Append encoded chunks to output BER array
         oid_in_ber.insert(oid_in_ber.end(), bytes.begin(), bytes.end());
     }
 

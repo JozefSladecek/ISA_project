@@ -250,11 +250,12 @@ int main(int argc, char* argv[]) {
 
         }
         if (!received) {
-            std::cerr << "[ERROR] SNMP agent did not respond after " << config.retries << " retries\n";
+            std::cerr << "[ERROR] SNMP agent did not respond right after " << config.retries << " retries\n";
         }
 
         auto elapsed = std::chrono::steady_clock::now() - start_time;
         auto interval_duration = std::chrono::seconds(config.interval);
+        // ensure each polling cycle respects the configured interval by accounting for processing time and sleeping only the remaining duration
 
         if (elapsed >= interval_duration) {
             if (config.verbose) {
@@ -266,7 +267,6 @@ int main(int argc, char* argv[]) {
             }
             continue; // skip
         }
-
         auto sleep_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
             interval_duration - elapsed
         );

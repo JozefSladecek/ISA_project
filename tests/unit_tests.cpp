@@ -181,19 +181,6 @@ TEST(oid_parsing_single) {
     ASSERT_EQ(parsed[0][8], 0);
 }
 
-//=============================================================================
-// TEST 6: URL parsing - host and port extraction
-//=============================================================================
-TEST(url_parsing_with_port) {
-    // Parse "http://localhost:9999/v1/metrics"
-    std::string url = "http://localhost:9999/v1/metrics";
-
-    auto parsed = OTELExporter::parse_host_port(url);
-
-    // Expected: host="localhost", port=9999
-    ASSERT_EQ(parsed.host, "localhost");
-    ASSERT_EQ(parsed.port, 9999);
-}
 
 //=============================================================================
 // TEST 7: Multiple OID string parsing
@@ -226,7 +213,7 @@ TEST(oid_parsing_multiple) {
 }
 
 //=============================================================================
-// TEST 8: Multiple OID string parsing
+// TEST 8: OID encoding with 128
 //=============================================================================
 TEST(oid_encoding_128_boundary) {
     std::vector<uint32_t> oid = {1, 3, 6, 1, 128};
@@ -707,9 +694,130 @@ TEST(snmp_parser_null_value) {
     ASSERT_EQ(parsed.varbinds[0].value, "NULL");
 }
 
+//=============================================================================
+// TEST 24: SNMP Response Parsing - multiple packets
+//=============================================================================
+TEST(snmp_multiple_packets)  {
+    std::vector<uint8_t> response1 = {
+        0x30, 0x2A,
+        0x02, 0x01, 0x01,
+        0x04, 0x06, 'p','u','b','l','i','c',
+        0xA2, 0x1D,
+        0x02, 0x04, 0x00, 0x00, 0x00, 0x0C,
+        0x02, 0x01, 0x00,
+        0x02, 0x01, 0x00,
+        0x30, 0x0F,
+        0x30, 0x0D,
+        0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x07, 0x00,
+        0x02, 0x01, 0x0A  // INTEGER: 10
+    };
+
+    std::vector<uint8_t> response2 = {
+        0x30, 0x2A,
+        0x02, 0x01, 0x01,
+        0x04, 0x06, 'p','u','b','l','i','c',
+        0xA2, 0x1D,
+        0x02, 0x04, 0x00, 0x00, 0x00, 0x0D,
+        0x02, 0x01, 0x00,
+        0x02, 0x01, 0x00,
+        0x30, 0x0F,
+        0x30, 0x0D,
+        0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x07, 0x00,
+        0x02, 0x01, 0x14  // INTEGER: 20
+    };
+
+    SNMP_parser parser;
+
+    SNMPResponse parsed1 = parser.parse_response(response1);
+    ASSERT_EQ(parsed1.request_id, 12);
+    ASSERT_EQ(parsed1.varbinds[0].value, "10");
+
+    SNMPResponse parsed2 = parser.parse_response(response2);
+    ASSERT_EQ(parsed2.request_id, 13);
+    ASSERT_EQ(parsed2.varbinds[0].value, "20");
+}
+
+//=============================================================================
+// END OF PARSER TESTS TESTS |
+//=============================================================================
 
 
+//=============================================================================
+// OTEL EXPORTER
+//=============================================================================
 
+//=============================================================================
+// TEST 6: Otel exporter - URL parsing - host and port extraction
+//=============================================================================
+TEST(url_parsing_with_port) {
+    // Parse "http://localhost:9999/v1/metrics"
+    std::string url = "http://localhost:9999/v1/metrics";
+
+    auto parsed = OTELExporter::parse_host_port(url);
+
+    // Expected: host="localhost", port=9999
+    ASSERT_EQ(parsed.host, "localhost");
+    ASSERT_EQ(parsed.port, 9999);
+}
+
+//=============================================================================
+// TEST 26: Otel exporter - Exporter contains only numeric values
+//=============================================================================
+TEST(otel_build_metrics_numeric_only) {
+    SNMPResponse response;
+    response.request_id = 1;
+
+    // Numeric varbind
+    SNMPVarbind vb1;
+    vb1.oid = {1, 3, 6, 1, 2, 1, 1, 3, 0};
+    vb1.value = "123456";
+
+    // String varbind
+    SNMPVarbind vb2;
+    vb2.oid = {1, 3, 6, 1, 2, 1, 1, 5, 0};
+    vb2.value = "TestHost";
+
+    response.varbinds = {vb1, vb2};
+
+    OTELExporter exporter("localhost", "http://localhost:4318/v1/metrics", false);
+    auto metrics = exporter.build_metrics(response);
+
+    // Only 1 metric (numeric), string ignored
+    ASSERT_EQ(metrics.size(), 1);
+    ASSERT_EQ(metrics[0].value, 123456);
+    ASSERT_EQ(metrics[0].oid_str, "1.3.6.1.2.1.1.3.0");
+
+    // Check name - could be either default or mapped
+    // If mapping.json exists: "system.uptime"
+    // If no mapping: "snmp.1.3.6.1.2.1.1.3.0"
+    bool is_default = (metrics[0].name == "snmp.1.3.6.1.2.1.1.3.0");
+    bool is_mapped = (metrics[0].name == "system.uptime");
+    ASSERT_EQ(is_default || is_mapped, true);
+}
+
+//=============================================================================
+// TEST 27: Otel exporter - Extract path for export
+//=============================================================================
+TEST(otel_extract_path) {
+    OTELExporter exporter("localhost", "http://localhost:4318/v1/metrics", false);
+
+    std::string path1 = exporter.extract_path("http://localhost:4318/v1/metrics");
+    ASSERT_EQ(path1, "/v1/metrics");
+
+    std::string path2 = exporter.extract_path("http://localhost:4318");
+    ASSERT_EQ(path2, "/");
+}
+//=============================================================================
+// TEST 28: Otel exporter - oid na string pre export
+//=============================================================================
+TEST(otel_oid_to_string) {
+    std::vector<uint32_t> oid = {1, 3, 6, 1, 2, 1, 1, 3, 0};
+
+    OTELExporter exporter("localhost", "http://localhost:4318/v1/metrics", false);
+    std::string result = exporter.oid_to_string(oid);
+
+    ASSERT_EQ(result, "1.3.6.1.2.1.1.3.0");
+}
 
 //=============================================================================
 // MAIN - run tests
@@ -720,175 +828,36 @@ int main() {
     std::cout << "========================================\n\n";
 
     int passed = 0;
-    int total = 24;
+    int total = 28;
 
-    try {
-        RUN_TEST(file_load_valid);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(file_load_with_comments);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(oid_encoding_basic);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(oid_encoding_large_numbers);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(oid_encoding_128_boundary);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(oid_parsing_single);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(oid_parsing_multiple);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(community_string_encoding);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(varbind_single_oid);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(varbind_multiple_oids);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(varbindlist_single);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(varbindlist_multiple);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(getrequest_pdu_structure);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(getrequest_pdu_request_id);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_message_structure);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(url_parsing_with_port);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_parser_integer);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_parser_timeticks);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_parser_gauge32);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_parser_counter32);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_parser_octet_string);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_parser_multiple_varbinds);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_parser_large_integer);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
-
-    try {
-        RUN_TEST(snmp_parser_null_value);
-        passed++;
-    } catch (...) {
-        std::cerr << "Test crashed!\n";
-    }
+    try { RUN_TEST(file_load_valid); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(file_load_with_comments); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(oid_encoding_basic); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(oid_encoding_large_numbers); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(oid_encoding_128_boundary); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(oid_parsing_single); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(oid_parsing_multiple); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(community_string_encoding); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(varbind_single_oid); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(varbind_multiple_oids); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(varbindlist_single); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(varbindlist_multiple); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(getrequest_pdu_structure); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(getrequest_pdu_request_id); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_message_structure); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(url_parsing_with_port); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_parser_integer); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_parser_timeticks); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_parser_gauge32); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_parser_counter32); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_parser_octet_string); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_parser_multiple_varbinds); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_parser_large_integer); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_parser_null_value); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(snmp_multiple_packets); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(otel_build_metrics_numeric_only); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(otel_oid_to_string); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
+    try { RUN_TEST(otel_extract_path); passed++; } catch (...) { std::cerr << "Test crashed!\n"; }
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << passed << "/" << total << " tests passed\n";

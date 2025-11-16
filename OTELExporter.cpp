@@ -15,7 +15,50 @@
 #include "include/json.hpp"
 #include "include/httplib.h"
 #include <chrono>
+#include <fstream>
 #include <string>
+
+void OTELExporter::load_mapping_json(const std::string& filepath) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "[WARN] Could not open mapping file: " << filepath << "\n";
+        return;
+    }
+
+    try {
+        nlohmann::json j;
+        file >> j;
+
+        int loaded = 0;
+        for (auto& [oid, info] : j.items()) {
+            MetricMapping mapping;
+            mapping.name = info.value("name", "snmp." + oid);
+            mapping.unit = info.value("unit", "");
+            mapping.description = info.value("description", "");
+
+            oid_mapping[oid] = mapping;
+            loaded++;
+
+            if (verbose) {
+                std::cout << "[DEBUG] Loaded: " << oid
+                          << " → " << mapping.name;
+                if (!mapping.unit.empty()) {
+                    std::cout << " (" << mapping.unit << ")";
+                }
+                std::cout << "\n";
+            }
+        }
+
+        if (loaded > 0 && verbose) {
+            std::cout << "[INFO] Loaded " << loaded
+                      << " OID mappings from " << filepath << "\n";
+        }
+
+    } catch (const nlohmann::json::exception& e) {
+        std::cerr << "[ERROR] Failed to parse JSON mapping: "
+                  << e.what() << "\n";
+    }
+}
 
 OTELExporter::OTELExporter(const std::string& target, const std::string& endpoint, bool verbose)
     : snmp_target(target), verbose(verbose), endpoint(endpoint)
@@ -28,7 +71,32 @@ OTELExporter::OTELExporter(const std::string& target, const std::string& endpoin
         std::cout << "[DEBUG] OTEL endpoint: " << endpoint_host
                   << ":" << endpoint_port << extract_path(endpoint) << "\n";
     }
+    // load json mapping if exists
+    std::ifstream json_file("mapping.json");
+    if (json_file.is_open()) {
+        load_mapping_json("mapping.json");
+        json_file.close();
+    } else {
+        if (verbose) {
+            std::cout << "[INFO] No mapping.json found, using default OID names\n";
+        }
+    }
 }
+
+MetricMapping OTELExporter::get_metric_info(const std::string& oid) {
+    auto it = oid_mapping.find(oid);
+    if (it != oid_mapping.end()) {
+        return it->second;
+    }
+
+    // Default mapping if not exists
+    MetricMapping default_mapping;
+    default_mapping.name = "snmp." + oid;
+    default_mapping.unit = "";
+    default_mapping.description = "";
+    return default_mapping;
+}
+
 
 std::vector<DataForOTEL> OTELExporter::build_metrics(const SNMPResponse& response) {
     std::vector<DataForOTEL> metrics;
@@ -37,9 +105,14 @@ std::vector<DataForOTEL> OTELExporter::build_metrics(const SNMPResponse& respons
         if (is_number(vb.value)) {
             DataForOTEL data;
             data.value = std::stoi(vb.value);
-            data.name = "snmp." + oid_to_string(vb.oid);
-            data.unit = "";
+
             data.oid_str = oid_to_string(vb.oid);
+
+            MetricMapping info = get_metric_info(data.oid_str);
+            data.name = info.name;
+            data.unit = info.unit;
+            data.description = info.description;
+
             metrics.push_back(data);
         }
     }
@@ -55,7 +128,6 @@ void OTELExporter::export_gauge(const SNMPResponse& response) {
     send_json(json);
 }
 
-/// https://github.com/open-telemetry/opentelemetry-proto/blob/v1.8.0/examples/metrics.json
 std::string OTELExporter::build_json(const std::vector<DataForOTEL>& metrics) {
 
     using ordered_json = nlohmann::ordered_json;
@@ -70,7 +142,7 @@ std::string OTELExporter::build_json(const std::vector<DataForOTEL>& metrics) {
         ordered_json metric = {
             {"name", m.name},
             {"unit", m.unit},
-            {"description", ""},
+            {"description", m.description},
             {"gauge", {
             {"dataPoints", ordered_json::array({
                 {
@@ -121,8 +193,7 @@ std::string OTELExporter::build_json(const std::vector<DataForOTEL>& metrics) {
     };
 
     return otlp.dump(2);
-
-    }
+}
 
 
 void OTELExporter::send_json(std::string json) {
@@ -146,7 +217,6 @@ void OTELExporter::send_json(std::string json) {
 }
 
 // helper functions
-// https://stackoverflow.com/questions/4654636/how-to-determine-if-a-string-is-a-number-with-c
 bool OTELExporter::is_number(const std::string& s)
 {
     return !s.empty() && std::find_if(s.begin(),
@@ -211,5 +281,3 @@ OTELExporter::ParsedURL OTELExporter::parse_host_port(const std::string& url) {
 
     return result;
 }
-
-//https://github.com/nlohmann/json?tab=readme-ov-file#examples

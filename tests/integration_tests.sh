@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Projekt: ISA - snmp2otel
 # Autor: Jozef Sládeček
 # Login: xsladej00

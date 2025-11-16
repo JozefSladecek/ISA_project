@@ -12,6 +12,7 @@
 #include <iostream>
 
 SNMPResponse SNMP_parser::parse_response(const std::vector<uint8_t>& data) {
+    offset = 0;
     read_sequence(data);
     read_length(data);
     SNMPResponse response;
